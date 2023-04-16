@@ -18,11 +18,15 @@ package io.confluent.connect.elasticsearch;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
 
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.errors.DataException;
 import org.apache.kafka.connect.sink.ErrantRecordReporter;
@@ -48,12 +52,14 @@ public class ElasticsearchSinkTask extends SinkTask {
   private Set<String> indexCache;
   private OffsetTracker offsetTracker;
   private PartitionPauser partitionPauser;
+  private KafkaProducer<String, String> kafkaProducer;
 
   @Override
   public void start(Map<String, String> props) {
     start(props, null);
   }
-
+  
+  
   // visible for testing
   protected void start(Map<String, String> props, ElasticsearchClient client) {
     log.info("Starting ElasticsearchSinkTask.");
@@ -73,14 +79,25 @@ public class ElasticsearchSinkTask extends SinkTask {
         log.info("Errant record reporter not configured.");
       }
       // may be null if DLQ not enabled
+      
       reporter = context.errantRecordReporter();
+      
     } catch (NoClassDefFoundError | NoSuchMethodError e) {
       // Will occur in Connect runtimes earlier than 2.6
       log.warn("AK versions prior to 2.6 do not support the errant record reporter.");
     }
     Runnable afterBulkCallback = () -> offsetTracker.updateOffsets();
+    if(this.config.cdcBrokers()!= null && this.config.cdctopic()!=null) {
+    	Properties producerProps = new Properties();
+    	String brokerStr = String.join(",",this.config.cdcBrokers());
+    	producerProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, brokerStr);
+    	producerProps.put(ProducerConfig.CLIENT_ID_CONFIG, "ES_SINK_CONNECTOR");
+    	producerProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+    	producerProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+    	this.kafkaProducer = new KafkaProducer<String, String>(producerProps);
+    }
     this.client = client != null ? client
-        : new ElasticsearchClient(config, reporter, afterBulkCallback);
+        : new ElasticsearchClient(config, reporter, afterBulkCallback,this.kafkaProducer);
 
     if (!config.flushSynchronously()) {
       this.offsetTracker = new AsyncOffsetTracker(context);
@@ -90,6 +107,8 @@ public class ElasticsearchSinkTask extends SinkTask {
 
     log.info("Started ElasticsearchSinkTask. Connecting to ES server version: {}",
         this.client.version());
+    
+    
   }
 
   @Override
