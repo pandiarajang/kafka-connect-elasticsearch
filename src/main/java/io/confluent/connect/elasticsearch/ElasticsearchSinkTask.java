@@ -80,13 +80,14 @@ public class ElasticsearchSinkTask extends SinkTask {
       }
       // may be null if DLQ not enabled
       
-      reporter = context.errantRecordReporter();
+      this.reporter = context.errantRecordReporter();
       
     } catch (NoClassDefFoundError | NoSuchMethodError e) {
       // Will occur in Connect runtimes earlier than 2.6
       log.warn("AK versions prior to 2.6 do not support the errant record reporter.");
     }
     Runnable afterBulkCallback = () -> offsetTracker.updateOffsets();
+    
     if(this.config.cdcBrokers()!= null && this.config.cdctopic()!=null) {
     	Properties producerProps = new Properties();
     	String brokerStr = String.join(",",this.config.cdcBrokers());
@@ -95,6 +96,9 @@ public class ElasticsearchSinkTask extends SinkTask {
     	producerProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
     	producerProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
     	this.kafkaProducer = new KafkaProducer<String, String>(producerProps);
+
+    }else{
+    	System.out.println("ElasticsearchSinkTask.start() cdc brokers not set :");
     }
     this.client = client != null ? client
         : new ElasticsearchClient(config, reporter, afterBulkCallback,this.kafkaProducer);

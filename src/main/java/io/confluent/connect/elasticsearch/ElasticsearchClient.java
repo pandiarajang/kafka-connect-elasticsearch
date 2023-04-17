@@ -455,8 +455,9 @@ public class ElasticsearchClient {
 							.map(requestToSinkRecord::get)
 							.collect(toList());
 					inFlightRequests.put(executionId, sinkRecords);
-					
+
 					sinkRecords.stream().forEach(sinkrecord -> {
+
 						SearchRequest searchRequest = Requests.searchRequest(sinkrecord.getSinkRecord().topic());
 						SearchSourceBuilder builder = new SearchSourceBuilder();
 						QueryBuilder queryObj = QueryBuilders.matchQuery("_id", sinkrecord.getSinkRecord().key().toString());
@@ -475,14 +476,9 @@ public class ElasticsearchClient {
 							}
 						} catch (IOException e) {
 							sinkrecord.setOldRecord(NO_OLD_RECORD_FOUND);
-						}
+							}
 					});
-					
-					
 				}
-
-
-
 			}
 
 			@Override
@@ -491,7 +487,7 @@ public class ElasticsearchClient {
 				int idx = 0;
 				for (BulkItemResponse bulkItemResponse : response) {
 					DocWriteRequest<?> req = idx < requests.size() ? requests.get(idx) : null;
-					
+
 					boolean failed = handleResponse(bulkItemResponse, req, executionId);
 					if (!failed && req != null) {
 						requestToSinkRecord.get(req).offsetState.markProcessed();
@@ -646,6 +642,7 @@ public class ElasticsearchClient {
 			DocWriteRequest<?> request,
 			long executionId) {
 		if (response.isFailed()) {
+			System.out.println("ElasticsearchClient.handleResponse() failed");
 			for (String error : MALFORMED_DOC_ERRORS) {
 				if (response.getFailureMessage().contains(error)) {
 					boolean failed = handleMalformedDocResponse(response);
@@ -708,39 +705,36 @@ public class ElasticsearchClient {
 			return true;
 		}else if(this.kafkaProducer!=null) {
 			if(inFlightRequests!=null) {
-				List<SinkRecordAndOffset> sinkRecords = inFlightRequests.get(executionId);
-				sinkRecords.stream().forEach(sinkrecord -> {
-					String operationType = sinkrecord.getOldRecord().equalsIgnoreCase(NO_OLD_RECORD_FOUND) ? "Created":"Updated";
-					
-					String strRecord;
-					try {
-						
-						Struct record =  (Struct) sinkrecord.getSinkRecord().value();
-						Schema schema = sinkrecord.getSinkRecord().valueSchema();
-						List<Field>  fields= schema.fields(); 
-						JsonObjectBuilder recordObject = Json.createObjectBuilder();
-						JsonConverter convertor = new JsonConverter();
-						convertor = new JsonConverter();
-						convertor.configure(Collections.singletonMap("schemas.enable", "false"), false);
-					    byte[] rawJsonPayload = convertor.fromConnectData(sinkrecord.getSinkRecord().topic(), schema, sinkrecord.getSinkRecord().value());
-						strRecord = new String(rawJsonPayload, StandardCharsets.UTF_8);
-					    
-					} catch (Exception e) {
-						e.printStackTrace();
-						strRecord = "INVALID_RECORD";
-					}
-					
-					//String record = sinkrecord.getSinkRecord().value().getClass().getCanonicalName() + ":"+ sinkrecord.getSinkRecord().value().getClass().getName() + " : " +
-					//sinkrecord.getSinkRecord().value().getClass().getPackage()+" : "+sinkrecord.getSinkRecord().value().getClass().getName();
-					String prevRecord =sinkrecord.getOldRecord();
-					JsonObject producerObject = Json.createObjectBuilder().add("operation", operationType)
-							.add("latest_data", strRecord)
-							.add("old_data", prevRecord)
-							.build();
-					ProducerRecord<String, String> cdcRecordObj = new ProducerRecord<String, String>(this.config.cdctopic(),
-							producerObject.toString());
-					kafkaProducer.send(cdcRecordObj);
-				});
+				SinkRecordAndOffset sinkrecord = requestToSinkRecord.get(request); 
+				String operationType = sinkrecord.getOldRecord().equalsIgnoreCase(NO_OLD_RECORD_FOUND) ? "Created":"Updated";
+
+				String strRecord;
+				try {
+					Schema schema = sinkrecord.getSinkRecord().valueSchema();
+					JsonConverter convertor = new JsonConverter();
+					convertor.configure(Collections.singletonMap("schemas.enable", "false"), false);
+					byte[] rawJsonPayload = convertor.fromConnectData(sinkrecord.getSinkRecord().topic(), schema, sinkrecord.getSinkRecord().value());
+					convertor.close();
+					strRecord = new String(rawJsonPayload, StandardCharsets.UTF_8);
+
+				} catch (Exception e) {
+					e.printStackTrace();
+					strRecord = "INVALID_RECORD";
+				}
+
+				//String record = sinkrecord.getSinkRecord().value().getClass().getCanonicalName() + ":"+ sinkrecord.getSinkRecord().value().getClass().getName() + " : " +
+				//sinkrecord.getSinkRecord().value().getClass().getPackage()+" : "+sinkrecord.getSinkRecord().value().getClass().getName();
+				String prevRecord =sinkrecord.getOldRecord();
+				JsonObject producerObject = Json.createObjectBuilder().add("operation", operationType)
+						.add("latest_data", strRecord)
+						.add("old_data", prevRecord)
+						.build();
+				ProducerRecord<String, String> cdcRecordObj = new ProducerRecord<String, String>(this.config.cdctopic(),
+						producerObject.toString());
+				kafkaProducer.send(cdcRecordObj);
+
+			}else {
+				System.out.println("ElasticsearchClient.handleResponse() inFlightRequests is null " + inFlightRequests);
 			}
 		}
 		return false;
