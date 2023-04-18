@@ -764,10 +764,9 @@ public class ElasticsearchClient {
 	 */
 	private GenericRecord buildRecord(String name, String message) throws IOException, RestClientException {
 		String subject = name + "-value";
-		JsonParser parsor = Json.createParser(new StringReader(message));
-	
-		JsonObject jsonObject = parsor.getObject();
-
+		
+		com.google.gson.JsonObject jsonObject = (com.google.gson.JsonObject) com.google.gson.JsonParser.parseString(message);
+		
 		CachedSchemaRegistryClient client = new CachedSchemaRegistryClient(String.join(",", this.config.cdcSchemaReg()),20);
 		SchemaMetadata latestSchemaMetadata = client.getLatestSchemaMetadata(subject);
 		org.apache.avro.Schema schema = new org.apache.avro.Schema.Parser().parse(latestSchemaMetadata.getSchema());
@@ -782,17 +781,17 @@ public class ElasticsearchClient {
 		return record;
 	}
 
-	private String getValuesAsString(JsonObject jsonObject, String key) {
+	private String getValuesAsString(com.google.gson.JsonObject jsonObject, String key) {
 
 		if (jsonObject != null) {
 			if (jsonObject.get(key) != null) {
-				return jsonObject.getString(key);
+				return jsonObject.get(key).getAsString();
 			}
 		}
 		return null;
 	}
 
-	private void addValue(String name, Field field, Record record, JsonObject jsonObject) {
+	private void addValue(String name, Field field, Record record, com.google.gson.JsonObject jsonObject) {
 		String type = field.schema().getType().getName().toLowerCase();
 		type = field.schema().getType().getName().toLowerCase().equals("union")
 				? field.schema().getTypes().get(0).getFullName().toLowerCase()
@@ -828,7 +827,7 @@ public class ElasticsearchClient {
 			case "record":
 				org.apache.avro.Schema schema = field.schema();
 				if (jsonObject.get(key) != null) {
-					value = getRecord(name, schema, jsonObject.getJsonObject(key));
+					value = getRecord(name, schema, jsonObject.get(key).getAsJsonObject());
 				}
 				break;
 			default:
@@ -847,7 +846,7 @@ public class ElasticsearchClient {
 
 	}
 
-	public GenericRecord getRecord(String name, org.apache.avro.Schema schema, JsonObject jsonObject) {
+	public GenericRecord getRecord(String name, org.apache.avro.Schema schema, com.google.gson.JsonObject jsonObject) {
 		GenericData.Record record = new GenericData.Record(schema);
 		List<Field> fields = schema.getFields();
 
