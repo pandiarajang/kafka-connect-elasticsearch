@@ -22,8 +22,10 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
 
+import org.apache.avro.generic.GenericRecord;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.StringSerializer;
@@ -38,6 +40,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import io.confluent.connect.elasticsearch.ElasticsearchSinkConnectorConfig.BehaviorOnNullValues;
+import io.confluent.kafka.serializers.AbstractKafkaAvroSerDeConfig;
 
 @SuppressWarnings("checkstyle:ClassDataAbstractionCoupling")
 public class ElasticsearchSinkTask extends SinkTask {
@@ -52,8 +55,9 @@ public class ElasticsearchSinkTask extends SinkTask {
   private Set<String> indexCache;
   private OffsetTracker offsetTracker;
   private PartitionPauser partitionPauser;
-  private KafkaProducer<String, String> kafkaProducer;
-
+  private KafkaProducer<Integer, GenericRecord> kafkaProducer;
+  
+  
   @Override
   public void start(Map<String, String> props) {
     start(props, null);
@@ -88,14 +92,23 @@ public class ElasticsearchSinkTask extends SinkTask {
     }
     Runnable afterBulkCallback = () -> offsetTracker.updateOffsets();
     
-    if(this.config.cdcBrokers()!= null && this.config.cdctopic()!=null) {
+    if(this.config.cdcBrokers()!= null && this.config.cdctopic()!=null && this.config.cdcSchemaReg() !=null) {
     	Properties producerProps = new Properties();
     	String brokerStr = String.join(",",this.config.cdcBrokers());
     	producerProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, brokerStr);
-    	producerProps.put(ProducerConfig.CLIENT_ID_CONFIG, "ES_SINK_CONNECTOR");
-    	producerProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
-    	producerProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
-    	this.kafkaProducer = new KafkaProducer<String, String>(producerProps);
+    	producerProps.put(ProducerConfig.CLIENT_ID_CONFIG, "ES_SINK_CONNECTOR");    	
+    	producerProps.put(AbstractKafkaAvroSerDeConfig.SCHEMA_REGISTRY_URL_CONFIG, String.join(",", this.config.cdcSchemaReg()));
+		producerProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG,
+				"io.confluent.kafka.serializers.KafkaAvroSerializer");
+		producerProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG,
+				"io.confluent.kafka.serializers.KafkaAvroSerializer");
+		producerProps.put(ProducerConfig.ACKS_CONFIG, "1");
+		producerProps.put(ProducerConfig.RETRIES_CONFIG, "0");
+		producerProps.put(ProducerConfig.BATCH_SIZE_CONFIG, "16384");
+		producerProps.put(ProducerConfig.LINGER_MS_CONFIG, "1");
+		producerProps.put(ProducerConfig.BUFFER_MEMORY_CONFIG, "33554432");
+    	
+    	this.kafkaProducer = new KafkaProducer<Integer, GenericRecord>(producerProps);
 
     }else{
     	System.out.println("ElasticsearchSinkTask.start() cdc brokers not set :");

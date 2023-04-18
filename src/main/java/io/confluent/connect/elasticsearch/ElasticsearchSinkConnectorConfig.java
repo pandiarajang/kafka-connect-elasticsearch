@@ -46,7 +46,7 @@ import static org.apache.kafka.common.config.SslConfigs.SSL_TRUSTSTORE_TYPE_CONF
 import static org.apache.kafka.common.config.SslConfigs.addClientSslSupport;
 
 public class ElasticsearchSinkConnectorConfig extends AbstractConfig {
-	// Connector group
+	// CDC group
 	public static final String CONNECTION_CDCBROKERS_CONFIG = "cdc.brokers";
 	private static final String CONNECTION_CDCBROKERS_DOC =
 			"The comma-separated list of one or more kafka broker URLs, such as ``http://kafkahost1:9092,"
@@ -56,6 +56,12 @@ public class ElasticsearchSinkConnectorConfig extends AbstractConfig {
 	private static final String CONNECTION_CDCBROKERS_DISPLAY = "Kafka Brokers";
 	private static final String CONNECTION_CDCBROKERS_DEFAULT = null;
 
+	public static final String CONNECTION_CDCSCHEMAREG_CONFIG = "cdc.schema.registry.url";
+	private static final String CONNECTION_CDCSCHEMAREG_DOC =
+			"The url for, such as ``http://cp-schema-registry:8081";
+	private static final String CONNECTION_CDCSCHEMAREG_DISPLAY = "Kafka Brokers";
+	private static final String CONNECTION_CDCSCHEMAREG_DEFAULT = null;
+	
 
 	public static final String CONNECTION_CDCTOPIC_CONFIG = "cdc.topic";
 	private static final String CONNECTION_CDCTOPIC_DOC =
@@ -63,7 +69,7 @@ public class ElasticsearchSinkConnectorConfig extends AbstractConfig {
 	private static final String CONNECTION_CDCTOPIC_DISPLAY = "CDC kafka topic";
 	private static final String CONNECTION_CDCTOPIC_DEFAULT = "";
 
-
+	// Connector group
 	public static final String CONNECTION_URL_CONFIG = "connection.url";
 	private static final String CONNECTION_URL_DOC =
 			"The comma-separated list of one or more Elasticsearch URLs, such as ``http://eshost1:9200,"
@@ -458,7 +464,18 @@ public class ElasticsearchSinkConnectorConfig extends AbstractConfig {
 						++order,
 						Width.SHORT,
 						CONNECTION_CDCTOPIC_DISPLAY
-						);
+						).define(
+							CONNECTION_CDCSCHEMAREG_CONFIG,
+							Type.LIST,
+							CONNECTION_CDCSCHEMAREG_DEFAULT,
+							new UrlListValidator(),
+							Importance.LOW,
+							CONNECTION_CDCSCHEMAREG_DOC,
+							CDC_GROUP,
+							++order,
+							Width.SHORT,
+							CONNECTION_CDCBROKERS_DISPLAY
+							);
 	}
 
 	private static void addConnectorConfigs(ConfigDef configDef) {
@@ -970,7 +987,15 @@ public class ElasticsearchSinkConnectorConfig extends AbstractConfig {
 	public String cdctopic() {
 		return getString(CONNECTION_CDCTOPIC_CONFIG);
 	}
-
+	
+	public Set<String> cdcSchemaReg() {
+		if(getList(CONNECTION_CDCSCHEMAREG_CONFIG)==null) {
+			return null;
+		}
+		return getList(CONNECTION_CDCSCHEMAREG_CONFIG)
+				.stream().map(s -> s.endsWith("/") ? s.substring(0, s.length() - 1) : s)
+				.collect(Collectors.toCollection(HashSet::new));
+	}
 	public Set<String> cdcBrokers() {
 		if(getList(CONNECTION_CDCBROKERS_CONFIG)==null) {
 			return null;
@@ -1157,7 +1182,7 @@ public class ElasticsearchSinkConnectorConfig extends AbstractConfig {
 		@SuppressWarnings("unchecked")
 		public void ensureValid(String name, Object value) {
 
-			if(value==null && name==CONNECTION_CDCBROKERS_CONFIG) {
+			if(value==null && (name==CONNECTION_CDCBROKERS_CONFIG || name==CONNECTION_CDCSCHEMAREG_CONFIG)) {
 				return;
 			}
 

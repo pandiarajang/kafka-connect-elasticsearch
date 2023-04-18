@@ -15,7 +15,12 @@
 
 package io.confluent.connect.elasticsearch;
 
+import static io.confluent.connect.elasticsearch.ElasticsearchSinkConnectorConfig.FLUSH_TIMEOUT_MS_CONFIG;
+import static io.confluent.connect.elasticsearch.ElasticsearchSinkConnectorConfig.MAX_BUFFERED_RECORDS_CONFIG;
+import static java.util.stream.Collectors.toList;
+
 import java.io.IOException;
+import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -36,13 +41,15 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 
+import org.apache.avro.Schema.Field;
+import org.apache.avro.generic.GenericData;
+import org.apache.avro.generic.GenericData.Record;
+import org.apache.avro.generic.GenericRecord;
 import org.apache.http.HttpHost;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.utils.Time;
-import org.apache.kafka.connect.data.Field;
 import org.apache.kafka.connect.data.Schema;
-import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.json.JsonConverter;
 import org.apache.kafka.connect.sink.ErrantRecordReporter;
@@ -54,10 +61,10 @@ import org.elasticsearch.action.bulk.BackoffPolicy;
 import org.elasticsearch.action.bulk.BulkItemResponse;
 import org.elasticsearch.action.bulk.BulkProcessor;
 import org.elasticsearch.action.bulk.BulkProcessor.Listener;
-import org.elasticsearch.action.search.SearchRequest;
-import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.action.bulk.BulkRequest;
 import org.elasticsearch.action.bulk.BulkResponse;
+import org.elasticsearch.action.search.SearchRequest;
+import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.client.RequestOptions;
 import org.elasticsearch.client.Requests;
 import org.elasticsearch.client.RestClient;
@@ -80,18 +87,13 @@ import org.elasticsearch.search.builder.SearchSourceBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-
 import io.confluent.connect.elasticsearch.ElasticsearchSinkConnectorConfig.BehaviorOnMalformedDoc;
+import io.confluent.kafka.schemaregistry.client.CachedSchemaRegistryClient;
+import io.confluent.kafka.schemaregistry.client.SchemaMetadata;
+import io.confluent.kafka.schemaregistry.client.rest.exceptions.RestClientException;
 import jakarta.json.Json;
 import jakarta.json.JsonObject;
-import jakarta.json.JsonObjectBuilder;
-import jakarta.json.JsonReader;
-
-import static io.confluent.connect.elasticsearch.ElasticsearchSinkConnectorConfig.FLUSH_TIMEOUT_MS_CONFIG;
-import static io.confluent.connect.elasticsearch.ElasticsearchSinkConnectorConfig.MAX_BUFFERED_RECORDS_CONFIG;
-import static java.util.stream.Collectors.toList;
+import jakarta.json.stream.JsonParser;
 
 /**
  * Based on Elasticsearch's BulkProcessor, which is responsible for building batches based on size
@@ -139,14 +141,14 @@ public class ElasticsearchClient {
 	private final Lock inFlightRequestLock = new ReentrantLock();
 	private final Condition inFlightRequestsUpdated = inFlightRequestLock.newCondition();
 	private final String esVersion;
-	private final KafkaProducer<String, String> kafkaProducer;
+	private final KafkaProducer<Integer, GenericRecord> kafkaProducer;
 
 	@SuppressWarnings("deprecation")
 	public ElasticsearchClient(
 			ElasticsearchSinkConnectorConfig config,
 			ErrantRecordReporter reporter,
 			Runnable afterBulkCallback,
-			KafkaProducer<String, String> kafkaProducer
+			KafkaProducer<Integer, GenericRecord> kafkaProducer
 			) {
 		this.kafkaProducer=kafkaProducer;
 		this.bulkExecutorService = Executors.newFixedThreadPool(config.maxInFlightRequests());
@@ -706,7 +708,7 @@ public class ElasticsearchClient {
 		}else if(this.kafkaProducer!=null) {
 			if(inFlightRequests!=null) {
 				SinkRecordAndOffset sinkrecord = requestToSinkRecord.get(request); 
-				String operationType = sinkrecord.getOldRecord().equalsIgnoreCase(NO_OLD_RECORD_FOUND) ? "Created":"Updated";
+				String operationType = sinkrecord.getOldRecord().equalsIgnoreCase(NO_OLD_RECORD_FOUND) ? "inserted":"updated";
 
 				String strRecord;
 				try {
@@ -729,15 +731,135 @@ public class ElasticsearchClient {
 						.add("latest_data", strRecord)
 						.add("old_data", prevRecord)
 						.build();
-				ProducerRecord<String, String> cdcRecordObj = new ProducerRecord<String, String>(this.config.cdctopic(),
-						producerObject.toString());
-				kafkaProducer.send(cdcRecordObj);
+				try {
+					this.reportCdc(producerObject.toString());
+				} catch (IOException | RestClientException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}
 
 			}else {
 				System.out.println("ElasticsearchClient.handleResponse() inFlightRequests is null " + inFlightRequests);
 			}
 		}
 		return false;
+	}
+	
+	private void reportCdc(String message) throws IOException, RestClientException {
+		ProducerRecord<String, String> cdcRecordObj = new ProducerRecord<String, String>(this.config.cdctopic(),
+				message);
+		GenericRecord record = buildRecord(this.config.cdctopic(), message);
+	//	Producer<Integer, GenericRecord> producer = new KafkaProducer<Integer, GenericRecord>(producerProps);
+		int userIdInt = 1;
+		kafkaProducer.send(new ProducerRecord<Integer, GenericRecord>(this.config.cdctopic(), userIdInt, record));
+		kafkaProducer.close();
+	}
+	/**
+	 * Do not hard code fields names. Method should be able to build Generic record
+	 * using avro schema and message dynamically.
+	 * 
+	 * @return
+	 * @throws RestClientException
+	 * @throws IOException
+	 */
+	private GenericRecord buildRecord(String name, String message) throws IOException, RestClientException {
+		String subject = name + "-value";
+		JsonParser parsor = Json.createParser(new StringReader(message));
+	
+		JsonObject jsonObject = parsor.getObject();
+
+		CachedSchemaRegistryClient client = new CachedSchemaRegistryClient(String.join(",", this.config.cdcSchemaReg()),20);
+		SchemaMetadata latestSchemaMetadata = client.getLatestSchemaMetadata(subject);
+		org.apache.avro.Schema schema = new org.apache.avro.Schema.Parser().parse(latestSchemaMetadata.getSchema());
+		GenericData.Record record = new GenericData.Record(schema);
+		List<Field> fields = schema.getFields();
+
+		fields.parallelStream().forEach(field -> {
+			// System.out.println("DatatopicController.buildRecord() "+field.toString());
+			addValue(name, field, record, jsonObject);
+		});
+
+		return record;
+	}
+
+	private String getValuesAsString(JsonObject jsonObject, String key) {
+
+		if (jsonObject != null) {
+			if (jsonObject.get(key) != null) {
+				return jsonObject.getString(key);
+			}
+		}
+		return null;
+	}
+
+	private void addValue(String name, Field field, Record record, JsonObject jsonObject) {
+		String type = field.schema().getType().getName().toLowerCase();
+		type = field.schema().getType().getName().toLowerCase().equals("union")
+				? field.schema().getTypes().get(0).getFullName().toLowerCase()
+				: field.schema().getType().getName().toLowerCase();
+		String key = field.name();
+		Object value = null;
+		String valuestr;
+		// System.out.println("DatastoreController.addValue() + key: "+ key + " :json
+		// object: " + jsonObject.toString());
+		try {
+
+			switch (type) {
+			case "string":
+				valuestr = getValuesAsString(jsonObject, key);
+				value = valuestr;
+				break;
+			case "int":
+				valuestr = getValuesAsString(jsonObject, key);
+				value = (valuestr != null) ? Integer.parseInt(valuestr) : valuestr;
+				break;
+			case "float":
+				valuestr = getValuesAsString(jsonObject, key);
+				value = (valuestr != null) ? Float.parseFloat(valuestr) : valuestr;
+				break;
+			case "long":
+				valuestr = getValuesAsString(jsonObject, key);
+				value = (valuestr != null) ? Long.parseLong(valuestr) : valuestr;
+				break;
+			case "boolean":
+				valuestr = getValuesAsString(jsonObject, key);
+				value = (valuestr != null) ? Boolean.parseBoolean(valuestr) : valuestr;
+				break;
+			case "record":
+				org.apache.avro.Schema schema = field.schema();
+				if (jsonObject.get(key) != null) {
+					value = getRecord(name, schema, jsonObject.getJsonObject(key));
+				}
+				break;
+			default:
+				throw new UnsupportedOperationException(
+						"Input Type " + type + " not supported, Kindly update the schema " + name + " accordingly");
+			}
+		} catch (Exception e) {
+			System.err.println("Exception occured while adding values for key: " + key + " :type: " + type
+					+ " :with jsonobject: " + jsonObject.toString());
+			e.printStackTrace();
+		}
+
+		if (value != null) {
+			addField(record, key, value);
+		}
+
+	}
+
+	public GenericRecord getRecord(String name, org.apache.avro.Schema schema, JsonObject jsonObject) {
+		GenericData.Record record = new GenericData.Record(schema);
+		List<Field> fields = schema.getFields();
+
+		fields.parallelStream().forEach(field -> {
+			System.out.println("DatatopicController.buildRecord() " + field.toString());
+			addValue(name, field, record, jsonObject);
+		});
+		return record;
+	}
+
+	public void addField(GenericRecord record, String key, Object value) {
+		record.put(key, value);
 	}
 
 	/**
