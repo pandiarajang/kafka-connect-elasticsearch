@@ -752,7 +752,7 @@ public class ElasticsearchClient {
 	//	Producer<Integer, GenericRecord> producer = new KafkaProducer<Integer, GenericRecord>(producerProps);
 		int userIdInt = 1;
 		kafkaProducer.send(new ProducerRecord<Integer, GenericRecord>(this.config.cdctopic(), userIdInt, record));
-		kafkaProducer.close();
+		//kafkaProducer.close();
 	}
 	/**
 	 * Do not hard code fields names. Method should be able to build Generic record

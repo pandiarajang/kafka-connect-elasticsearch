@@ -96,7 +96,7 @@ public class ElasticsearchSinkTask extends SinkTask {
     	Properties producerProps = new Properties();
     	String brokerStr = String.join(",",this.config.cdcBrokers());
     	producerProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, brokerStr);
-    	producerProps.put(ProducerConfig.CLIENT_ID_CONFIG, "ES_SINK_CONNECTOR");    	
+    //	producerProps.put(ProducerConfig.CLIENT_ID_CONFIG, this.config.cdctopic()+"_producer");    	
     	producerProps.put(AbstractKafkaAvroSerDeConfig.SCHEMA_REGISTRY_URL_CONFIG, String.join(",", this.config.cdcSchemaReg()));
 		producerProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG,
 				"io.confluent.kafka.serializers.KafkaAvroSerializer");
@@ -107,7 +107,7 @@ public class ElasticsearchSinkTask extends SinkTask {
 		producerProps.put(ProducerConfig.BATCH_SIZE_CONFIG, "16384");
 		producerProps.put(ProducerConfig.LINGER_MS_CONFIG, "1");
 		producerProps.put(ProducerConfig.BUFFER_MEMORY_CONFIG, "33554432");
-    	
+		System.out.println("ElasticsearchSinkTask.start() cdc broker is set :");
     	this.kafkaProducer = new KafkaProducer<Integer, GenericRecord>(producerProps);
 
     }else{
@@ -167,6 +167,7 @@ public class ElasticsearchSinkTask extends SinkTask {
   @Override
   public void stop() {
     log.debug("Stopping Elasticsearch client.");
+    this.kafkaProducer.close();
     client.close();
   }
 
